@@ -1,0 +1,33 @@
+EASYPXE- A simple PXE daemon (dhcpd and tftpd), all written in Perl.
+
+This particular script just passes out a single specified linux enviroment 
+to whatever host does PXE on the network. No more, no less. Additional features
+can be added given interest and desperate pleading, but I'll release the simple
+solution for now. 
+
+Prerequisites:
+	Net::DHCP::Constants
+	Net::DHCP::Packet
+	Net::TFTPD
+
+Instructions: 
+
+1. Copy your network boot kernel and initrd into the tftp_root directory provided in this package.
+2. Edit tftp_root/pxelinux.cfg/default file, specifying the filenames of the kernel and initrd. It should look something like this:
+
+##Begin File############################
+
+default linux
+label linux
+        kernel vmlinuz
+        append initrd.img noapic
+
+##End File##############################
+
+Some mainstream distributions (RedHat, Debian) may already have an example config file hosted somewhere. If so, I recommend using it instead.
+
+3. ./easypxe (as root)
+4. Enjoy (Considering you didn't have to install tftpd, dhcpd, and xinetd, and google around for a howto)
+
+All questions, inquiries should be forwarded to amin@aminastaneh.net, unless you are going to complain how this script is not RFC-compliant, which in that case /dev/null is the appropriate place to send your message.
+
