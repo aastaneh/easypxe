@@ -12,8 +12,6 @@ use POSIX qw(setsid strftime);
 use IO::Socket::INET;
 use threads;
 use Sys::Syslog;
-use DBI;
-use DBD::mysql;
 use Net::TFTPd;
 use Time::HiRes qw(usleep);
 
