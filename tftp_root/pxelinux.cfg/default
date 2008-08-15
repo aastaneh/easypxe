@@ -1,4 +1,4 @@
 default linux
 label linux
         kernel <kernelfile>
-        append <initrdfile>  <add your kernel options here>
+        append initrd=<initrdfile> <add your kernel options here>
