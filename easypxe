@@ -1,0 +1,328 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+
+use File::Basename;
+use Fcntl qw(LOCK_EX LOCK_NB);
+use Socket;
+use Net::DHCP::Packet;
+use Net::DHCP::Constants;
+use POSIX qw(setsid strftime);
+use IO::Socket::INET;
+use threads;
+use Sys::Syslog;
+use DBI;
+use DBD::mysql;
+use Net::TFTPd;
+use Time::HiRes qw(usleep);
+
+sub dhcp_acknowledge;
+sub dhcp_discover;
+
+##################################################################
+# easypxe - Perl-Based PXE Solution, in place of installing and 
+#           configuring dhcpd and tftpd. Adapted from sysprod, 
+#           a beowulf cluster provisioning script written by the
+#           same author.
+#
+# Amin Astaneh, amin@aminastaneh.net
+# GPLv2, Sucka. Open Source Rocks- Evolve or Die.
+##################################################################
+
+##################################################################
+# Configuration options for the script
+##################################################################
+my $host_network_segment  = "192.168.1";
+my $listen_address        = "192.168.1.1";
+my $dns_server            = "0.0.0.0"; 
+my $gateway               = "0.0.0.0";
+
+my $db_host               = "localhost";
+my $database              = "easypxe";
+my $db_user               = "easypxe";
+my $db_password           = "changeme"; 
+
+my $tftp_root             = "./tftp_root";
+my $pxe_boot_file         = "pxelinux.0";
+my $netmask               = "255.255.255.0";
+my $domain_name           = "localdomain";
+
+my $daemonize_process     = 0;
+
+##################################################################
+# DO NOT EDIT BELOW THIS LINE!!!
+##################################################################
+
+
+##################################################################
+# Startup Stuff (spin off threads, bind sockets, daemonize)
+##################################################################
+
+my $proc_name = basename($0);
+openlog $proc_name, 0, "user" or die "No logging is available\n" if $daemonize_process;
+logger("Starting");
+
+# Need to detach and go off on our own...
+if ($daemonize_process){
+	open SELFLOCK, "<$0" or die "Couldn't open $0: $!\n";
+	flock SELFLOCK, LOCK_EX | LOCK_NB or die "Aborting: another $proc_name is already running\n";
+
+	close STDERR; close STDOUT; close STDIN;
+
+	$| = 1;
+	chdir('/');
+
+	# Double-fork to avoid leaving a zombie process behind:
+	exit if fork;
+	exit if fork;
+	sleep 1 until getppid == 1;
+}
+
+# Socket for receiving DHCP requests
+my $sock_in = IO::Socket::INET->new(
+                LocalPort => 67,
+                PeerPort  => 68,
+                Broadcast => 1,
+                Proto     => 'udp') 
+		or die "DHCP server socket creation error: $@\n";
+
+# Socket for sending DHCP responses
+my $sock_out = IO::Socket::INET->new(
+		PeerPort  => 68,
+                PeerAddr  => '255.255.255.255',
+                LocalAddr => $listen_address,
+                Proto     => 'udp',
+                Broadcast => 1 ) 
+		or die "DHCP client socket creation error: $@\n";
+
+$sock_out->sockopt(SO_BROADCAST, 1);	
+
+# Let there be threads!
+
+# Single Thread for the TFTP server
+#my $tftp = threads->create(\&tftpd, $tftp_root);
+
+# Let there be a database connection!
+my $dsn = "dbi:mysql:$database:$db_host:3306";
+my $dbhandle = DBI->connect($dsn, $db_user, $db_password) or die "MySQL- Unable to connect: $DBI::errstr\n";
+
+# Transaction Counter
+my $transaction = 0;
+
+
+##################################################################
+# Main Routine
+##################################################################
+
+for (;;) {
+	my $buf = undef;
+	my $fromaddr;                                           
+	my $dhcpreq;
+	my @config;
+	my @configpxe;
+	eval {
+		logger("DHCP: Listening for request.");
+		$fromaddr = $sock_in->recv( $buf,4096 ) || logger("recv:$!");
+		next if ($!);
+		$transaction++;
+		{
+			use bytes;
+                        my ( $port,$addr ) = unpack_sockaddr_in($fromaddr);
+                        my $ipaddr = inet_ntoa($addr);
+                	#logger("DHCP: Got a packet tr=$transaction src=$ipaddr:$port length=".length($buf));
+		}
+
+		my $dhcpreq = new Net::DHCP::Packet($buf);
+                $dhcpreq->comment($transaction);
+		my $messagetype = $dhcpreq->getOptionValue(DHO_DHCP_MESSAGE_TYPE());
+		my $mac = substr($dhcpreq->chaddr(),0,12);
+		logger("DHCP: Received request from " . $mac);
+
+		# Mac Address Lookup
+		my $switchnum = 0;
+		my $interface = undef;
+		my $switch = undef;
+
+		# Check the database to make sure this is a new 
+		# machine and satisfy this request on that network
+		# segment
+		my $node_ip = undef;
+		$query = "SELECT ip FROM sys_inventory where mac = \'$mac\' and installed = 0";
+		$query_handle = $dbhandle->prepare($query);
+        	$query_handle->execute();
+		$query_handle->bind_columns(undef, \$node_ip);
+		if ($query_handle->fetch() && $node_ip ne "0.0.0.0") {
+			 my $write_pxe = 1;
+                         foreach (@configpxe) {
+                         	if ($_ =~ $mac) {
+                                        $write_pxe = 0;
+                                }
+                         }
+			if ($write_pxe == 1) {
+				push(@configpxe, $mac);
+				#Write Bootloader Config
+				my @octets = split /\./, $node_ip;
+				my $hex_ip = sprintf("%02X%02X%02X%02X", $octets[0], $octets[1], $octets[2], $octets[3]);
+				my $conf_file =  $tftp_root . "/pxelinux.cfg/" . $hex_ip;
+				open (HOST, ">$conf_file");
+				logger("PXE: Writing bootloader config for $node_ip, ($hex_ip) to $conf_file");
+				print HOST "default linux\nlabel linux\n\tkernel vmlinuz-centos-el52\n";
+				print HOST "\tappend initrd=initrd-centos-el52.img ksdevice=eth0 ";
+				print HOST "ks=nfs:10.250.1.1:/pool0/opt/admin/ks.el5.x86_64/ks_generic_el52.cfg console=ttyS1,9600\n";
+				close HOST;
+			}
+
+			if ( $messagetype eq DHCPDISCOVER() ) {
+                                dhcp_discover ($dhcpreq, $node_ip, $netmask, $domain_name, $pxe_boot_file, $listen_address, $name_server );
+  	                } elsif ( $messagetype eq DHCPREQUEST() ) {
+				dhcp_acknowledge( $dhcpreq, $node_ip, $netmask, $domain_name, $pxe_boot_file, $listen_address, $name_server );
+				logger("PXE: Host $node_ip beginning boot process.");
+                        } else  {
+                                logger("DHCP: request from $mac ignored.");
+                        }	
+		}
+	};
+	if ($@) {
+		logger("Daemon Error: $@\n");
+	}
+}
+
+# ____ _  _ ___  ____ ____ _  _ ___ _ _  _ ____ ____ 
+# [__  |  | |__] |__/ |  | |  |  |  | |\ | |___ [__  
+# ___] |__| |__] |  \ |__| |__|  |  | | \| |___ ___] 
+#
+
+# A simple loggin routine. Meh.
+sub logger {
+	my $string = shift;
+	if ($daemonize_process){
+		syslog 'info', $string;
+	} else {
+		my $ts = localtime;
+		print STDERR "[$ts] " . $string . "\n";
+	}
+}
+
+# Send off your DHCPOFFER packet
+sub dhcp_discover($$) {
+	my ($dhcpreq, $calc_ip, $calc_mask, $domain_name, $pxe_boot_file, $tftp_server, $name_server) = @_;
+        my $calc_router;
+
+	my $dhcpresp = new Net::DHCP::Packet(
+                            Comment => $dhcpreq->comment(),
+                            Op => BOOTREPLY(),
+                            Hops => $dhcpreq->hops(),
+                            Xid => $dhcpreq->xid(),
+                            Flags => $dhcpreq->flags(),
+                            Ciaddr => $dhcpreq->ciaddr(),
+			    File => $pxe_boot_file,
+                            Yiaddr => $calc_ip,
+                            Siaddr => $tftp_server,
+                            Giaddr => $dhcpreq->giaddr(),
+                            Chaddr => $dhcpreq->chaddr(),
+                            DHO_DHCP_MESSAGE_TYPE() => DHCPOFFER(),
+			    DHO_SUBNET_MASK() => $calc_mask,
+			    DHO_DOMAIN_NAME() => $domain_name,
+			    DHO_ROUTERS()     => $tftp_server,
+			    DHO_NAME_SERVERS() => $name_server,
+		            DHO_DHCP_SERVER_IDENTIFIER() => $tftp_server
+        );
+
+	logger("DHCP: Sending OFFER tr=".$dhcpresp->comment());
+        $sock_out->send($dhcpresp->serialize()) or die "Error sending OFFER:$!\n";
+}
+
+# Send off your DHCPACK/NAK packet
+sub dhcp_acknowledge {
+        my ($dhcpreq, $calc_ip, $calc_mask, $domain_name, $pxe_boot_file, $tftp_server, $name_server) = @_;
+
+
+        # compare calculated address with requested address
+        if ($calc_ip eq $dhcpreq->getOptionValue(DHO_DHCP_REQUESTED_ADDRESS())) {
+                
+	# address is correct, we send an ACK
+	        my $dhcpresp = new Net::DHCP::Packet(
+                            Comment => $dhcpreq->comment(),
+                            Op => BOOTREPLY(),
+                            Hops => $dhcpreq->hops(),
+                            Xid => $dhcpreq->xid(),
+			    File => $pxe_boot_file,
+                            Flags => $dhcpreq->flags(),
+                            Ciaddr => $dhcpreq->ciaddr(),
+                            Yiaddr => $calc_ip,
+                            Siaddr => $tftp_server,
+                            Giaddr => $dhcpreq->giaddr(),
+                            Chaddr => $dhcpreq->chaddr(),
+                            DHO_DHCP_MESSAGE_TYPE() => DHCPACK(),
+                            DHO_DHCP_LEASE_TIME() => "36000",
+			    DHO_SUBNET_MASK() => $calc_mask,
+                            DHO_DOMAIN_NAME() => $domain_name,
+			    DHO_ROUTERS()     => $tftp_server,
+			    DHO_NAME_SERVERS() => $name_server,
+			    DHO_DHCP_SERVER_IDENTIFIER() => $tftp_server
+        	);
+		
+        	logger("DHCP: Sending ACK tr=".$dhcpresp->comment());
+        	$sock_out->send($dhcpresp->serialize()) || die "Error sending ACK:$!\n";
+
+		return 0;
+	} else {
+                # bad request, we send a NAK
+        	my $dhcpresp = new Net::DHCP::Packet(
+                            Comment => $dhcpreq->comment(),
+                            Op => BOOTREPLY(),
+                            Hops => $dhcpreq->hops(),
+                            Xid => $dhcpreq->xid(),
+                            Flags => $dhcpreq->flags(),
+                            Ciaddr => $dhcpreq->ciaddr(),
+                            Yiaddr => "0.0.0.0",
+                            Siaddr => $dhcpreq->siaddr(),
+                            Giaddr => $dhcpreq->giaddr(),
+                            Chaddr => $dhcpreq->chaddr(),
+                            DHO_DHCP_MESSAGE_TYPE() => DHCPNAK(),
+                            DHO_DHCP_MESSAGE(), "Bad request...",
+                );
+		
+        	logger("DHCP: Sending NAK tr=".$dhcpresp->comment());
+        	$sock_out->send($dhcpresp->serialize()) || die "Error sending NAK:$!\n";
+
+		return 1;
+        }
+}
+
+# A TFTPd service, ran as a thread. Used for PXEbooting.
+
+sub tftpd {
+	my $rootdir = shift;
+	my $listener = Net::TFTPd->new(
+		'RootDir' => $rootdir,
+		'Timeout' => 10
+	) or die Net::TFTPd->error;
+	
+	logger("TFTP_SERVER: TFTP server listening");
+
+	for(;;) {
+		if ( my $request = $listener->waitRQ() ){
+			my $file_name = $request->{'_REQUEST_'}{'FileName'};
+			
+			# um, for some reason this tftp module returns a bunch
+			# of crap around the file name... lets get rid of it
+			# add any characters to the class that you need
+			$file_name =~ s/[^a-zA-Z0-9\/\.\_\-]*//g;
+			$request->{'_REQUEST_'}{'FileName'} = $file_name;
+
+			logger( "TFTP_SERVER: Received TFTP request for file \"$file_name\"" );
+			my $pid = fork();
+			if($pid == 0) {
+				my $ret = $request->processRQ();
+				if ( defined($ret) ){
+					logger( "TFTP_SERVER: Transfer of \"$file_name\" completed successfully.");
+				} else {
+					logger( "TFTP_SERVER_ERROR: File \"$file_name\": " . $request->error );
+				}
+			exit 0;
+			}
+		}
+	}
+}
