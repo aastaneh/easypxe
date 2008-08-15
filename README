@@ -1,10 +1,11 @@
 #######################################################################
 # easypxe- A simple PXE daemon (dhcpd and tftpd), all written in Perl.
 # Written by Amin Astaneh amin@aminastaneh.net
+# GPL Version 2
 ####################################################################### 
 
 This simple script just passes out a specified linux installer 
-enviroment to whatever host that does PXE on the network. No more, no 
+environment to whatever host that does PXE on the network. No more, no 
 less. Additional features can be added given interest and desperate 
 pleading, but I'll release the simple case for now.
 
@@ -58,4 +59,6 @@ too.
 All questions, inquiries should be forwarded to amin@aminastaneh.net, 
 unless you are going to complain how this script is not RFC-compliant. 
 In that case, /dev/null is the appropriate place to send your message.
+
+-Amin Astaneh amin@aminastaneh.net
 
