@@ -37,11 +37,7 @@ my $host_network_segment  = "192.168.1";
 my $listen_address        = "192.168.1.1";
 my $dns_server            = "0.0.0.0"; 
 my $gateway               = "0.0.0.0";
-
-my $db_host               = "localhost";
-my $database              = "easypxe";
-my $db_user               = "easypxe";
-my $db_password           = "changeme"; 
+my $start_octet           = "2";
 
 my $tftp_root             = "./tftp_root";
 my $pxe_boot_file         = "pxelinux.0";
@@ -101,15 +97,13 @@ $sock_out->sockopt(SO_BROADCAST, 1);
 # Let there be threads!
 
 # Single Thread for the TFTP server
-#my $tftp = threads->create(\&tftpd, $tftp_root);
-
-# Let there be a database connection!
-my $dsn = "dbi:mysql:$database:$db_host:3306";
-my $dbhandle = DBI->connect($dsn, $db_user, $db_password) or die "MySQL- Unable to connect: $DBI::errstr\n";
+my $tftp = threads->create(\&tftpd, $tftp_root);
 
 # Transaction Counter
 my $transaction = 0;
 
+# Hash Keeps Track of Multiple PXE'd Machines
+my %machines = undef;
 
 ##################################################################
 # Main Routine
@@ -139,49 +133,31 @@ for (;;) {
 		my $mac = substr($dhcpreq->chaddr(),0,12);
 		logger("DHCP: Received request from " . $mac);
 
-		# Mac Address Lookup
-		my $switchnum = 0;
-		my $interface = undef;
-		my $switch = undef;
-
-		# Check the database to make sure this is a new 
+		# Check the hash to check if it is a new 
 		# machine and satisfy this request on that network
-		# segment
+		# segment (Installers DHCP after loading).
 		my $node_ip = undef;
-		$query = "SELECT ip FROM sys_inventory where mac = \'$mac\' and installed = 0";
-		$query_handle = $dbhandle->prepare($query);
-        	$query_handle->execute();
-		$query_handle->bind_columns(undef, \$node_ip);
-		if ($query_handle->fetch() && $node_ip ne "0.0.0.0") {
-			 my $write_pxe = 1;
-                         foreach (@configpxe) {
-                         	if ($_ =~ $mac) {
-                                        $write_pxe = 0;
-                                }
-                         }
-			if ($write_pxe == 1) {
-				push(@configpxe, $mac);
-				#Write Bootloader Config
-				my @octets = split /\./, $node_ip;
-				my $hex_ip = sprintf("%02X%02X%02X%02X", $octets[0], $octets[1], $octets[2], $octets[3]);
-				my $conf_file =  $tftp_root . "/pxelinux.cfg/" . $hex_ip;
-				open (HOST, ">$conf_file");
-				logger("PXE: Writing bootloader config for $node_ip, ($hex_ip) to $conf_file");
-				print HOST "default linux\nlabel linux\n\tkernel vmlinuz-centos-el52\n";
-				print HOST "\tappend initrd=initrd-centos-el52.img ksdevice=eth0 ";
-				print HOST "ks=nfs:10.250.1.1:/pool0/opt/admin/ks.el5.x86_64/ks_generic_el52.cfg console=ttyS1,9600\n";
-				close HOST;
+		if($machines($mac)){
+			$node_ip = "$host_network_segment.$machines($mac)"; 
+		} else {
+			if ($start_octet >= 254) {
+				logger("FATAL: Ran out of addresses!");
+				exit;
 			}
-
-			if ( $messagetype eq DHCPDISCOVER() ) {
-                                dhcp_discover ($dhcpreq, $node_ip, $netmask, $domain_name, $pxe_boot_file, $listen_address, $name_server );
-  	                } elsif ( $messagetype eq DHCPREQUEST() ) {
-				dhcp_acknowledge( $dhcpreq, $node_ip, $netmask, $domain_name, $pxe_boot_file, $listen_address, $name_server );
-				logger("PXE: Host $node_ip beginning boot process.");
-                        } else  {
-                                logger("DHCP: request from $mac ignored.");
-                        }	
+			$node_ip = "$host_network_segment.$start_octet";
+			$machines($mac) = $start_octet;
+			$start_octet++;
 		}
+		
+		if ( $messagetype eq DHCPDISCOVER() ) {
+                	dhcp_discover ($dhcpreq, $node_ip, $netmask, $domain_name, $pxe_boot_file, $listen_address, $name_server );
+  	        } elsif ( $messagetype eq DHCPREQUEST() ) {
+			dhcp_acknowledge( $dhcpreq, $node_ip, $netmask, $domain_name, $pxe_boot_file, $listen_address, $name_server );
+			logger("PXE: Host $node_ip beginning boot process.");
+                } else  {
+                        logger("DHCP: request from $mac ignored.");
+                }	
+	
 	};
 	if ($@) {
 		logger("Daemon Error: $@\n");
