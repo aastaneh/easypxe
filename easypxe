@@ -21,8 +21,9 @@ sub dhcp_acknowledge;
 sub dhcp_discover;
 
 ##################################################################
-# easypxe - Perl-Based PXE Solution, in place of installing and 
-#           configuring dhcpd and tftpd. Adapted from sysprod, 
+# easypxe - Perl-Based Simple PXE Solution, in place of installing 
+# 	    and configuring dhcpd and tftpd just to run a linux 
+# 	    installer on one machine.  Adapted from sysprod, 
 #           a beowulf cluster provisioning script written by the
 #           same author.
 #
@@ -33,11 +34,10 @@ sub dhcp_discover;
 ##################################################################
 # Configuration options for the script
 ##################################################################
-my $host_network_segment  = "192.168.1";
+my $pxe_client_ip         = "192.168.1.2";
 my $listen_address        = "192.168.1.1";
-my $dns_server            = "0.0.0.0"; 
+my $name_server           = "0.0.0.0"; 
 my $gateway               = "0.0.0.0";
-my $start_octet           = "2";
 
 my $tftp_root             = "./tftp_root";
 my $pxe_boot_file         = "pxelinux.0";
@@ -102,8 +102,6 @@ my $tftp = threads->create(\&tftpd, $tftp_root);
 # Transaction Counter
 my $transaction = 0;
 
-# Hash Keeps Track of Multiple PXE'd Machines
-my %machines = undef;
 
 ##################################################################
 # Main Routine
@@ -115,6 +113,7 @@ for (;;) {
 	my $dhcpreq;
 	my @config;
 	my @configpxe;
+	my %machines;
 	eval {
 		logger("DHCP: Listening for request.");
 		$fromaddr = $sock_in->recv( $buf,4096 ) || logger("recv:$!");
@@ -124,7 +123,6 @@ for (;;) {
 			use bytes;
                         my ( $port,$addr ) = unpack_sockaddr_in($fromaddr);
                         my $ipaddr = inet_ntoa($addr);
-                	#logger("DHCP: Got a packet tr=$transaction src=$ipaddr:$port length=".length($buf));
 		}
 
 		my $dhcpreq = new Net::DHCP::Packet($buf);
@@ -133,27 +131,11 @@ for (;;) {
 		my $mac = substr($dhcpreq->chaddr(),0,12);
 		logger("DHCP: Received request from " . $mac);
 
-		# Check the hash to check if it is a new 
-		# machine and satisfy this request on that network
-		# segment (Installers DHCP after loading).
-		my $node_ip = undef;
-		if($machines($mac)){
-			$node_ip = "$host_network_segment.$machines($mac)"; 
-		} else {
-			if ($start_octet >= 254) {
-				logger("FATAL: Ran out of addresses!");
-				exit;
-			}
-			$node_ip = "$host_network_segment.$start_octet";
-			$machines($mac) = $start_octet;
-			$start_octet++;
-		}
-		
 		if ( $messagetype eq DHCPDISCOVER() ) {
-                	dhcp_discover ($dhcpreq, $node_ip, $netmask, $domain_name, $pxe_boot_file, $listen_address, $name_server );
+                	dhcp_discover ($dhcpreq, $pxe_client_ip, $netmask, $domain_name, $pxe_boot_file, $listen_address, $name_server );
   	        } elsif ( $messagetype eq DHCPREQUEST() ) {
-			dhcp_acknowledge( $dhcpreq, $node_ip, $netmask, $domain_name, $pxe_boot_file, $listen_address, $name_server );
-			logger("PXE: Host $node_ip beginning boot process.");
+			dhcp_acknowledge( $dhcpreq, $pxe_client_ip, $netmask, $domain_name, $pxe_boot_file, $listen_address, $name_server );
+			logger("PXE: Host $pxe_client_ip beginning boot process.");
                 } else  {
                         logger("DHCP: request from $mac ignored.");
                 }	

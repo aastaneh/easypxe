@@ -1,33 +1,61 @@
-EASYPXE- A simple PXE daemon (dhcpd and tftpd), all written in Perl.
+#######################################################################
+# easypxe- A simple PXE daemon (dhcpd and tftpd), all written in Perl.
+# Written by Amin Astaneh amin@aminastaneh.net
+####################################################################### 
 
-This particular script just passes out a single specified linux enviroment 
-to whatever host does PXE on the network. No more, no less. Additional features
-can be added given interest and desperate pleading, but I'll release the simple
-solution for now. 
+This simple script just passes out a specified linux installer 
+enviroment to whatever host that does PXE on the network. No more, no 
+less. Additional features can be added given interest and desperate 
+pleading, but I'll release the simple case for now.
+
+Usage Example: You want to install linux on a machine that has no cdrom 
+(like those new-fangled netbooks). Just hook it up to a network that's 
+running easypxe, start the computer, and you're golden. 
 
 Prerequisites:
 	Net::DHCP::Constants
 	Net::DHCP::Packet
-	Net::TFTPD
+	Net::TFTPd
 
 Instructions: 
 
-1. Copy your network boot kernel and initrd into the tftp_root directory provided in this package.
-2. Edit tftp_root/pxelinux.cfg/default file, specifying the filenames of the kernel and initrd. It should look something like this:
+1. Copy your network boot kernel and initrd into the tftp_root directory 
+   provided in this package.
 
-##Begin File############################
+2. Edit tftp_root/pxelinux.cfg/default file, specifying the filenames of 
+   the kernel and initrd, as well as any special options. It should look
+   something like this:
+
+##Begin File#####################################
 
 default linux
 label linux
         kernel vmlinuz
-        append initrd.img noapic
+        append initrd=initrd.img foooption=bar..
 
-##End File##############################
+##End File#######################################
 
-Some mainstream distributions (RedHat, Debian) may already have an example config file hosted somewhere. If so, I recommend using it instead.
+Some mainstream distributions (RedHat, Debian) may already have a 
+provided config file hosted somewhere. If so, I recommend using it 
+instead.
+
+3. Edit the configuration section of the easypxe script, specifying the
+   IP of the interface that will be providing PXE and the IP you want 
+   to assign to the client.
 
 3. ./easypxe (as root)
-4. Enjoy (Considering you didn't have to install tftpd, dhcpd, and xinetd, and google around for a howto)
 
-All questions, inquiries should be forwarded to amin@aminastaneh.net, unless you are going to complain how this script is not RFC-compliant, which in that case /dev/null is the appropriate place to send your message.
+4. Enjoy (Considering you didn't have to install tftpd, dhcpd, and xinetd, 
+and google around for a howto)
+
+**A suggestion- If you are doing this from computer to computer via a 
+single cable, some DVD distributions (like RedHat) can be mounted
+in a http docroot on the machine running easypxe and you can do the 
+entire install process between the two machines without needing to run
+as a firewall to forward installer traffic. You get a speedy install,
+too. 
+
+All questions, inquiries should be forwarded to amin@aminastaneh.net, 
+unless you are going to complain how this script is not RFC-compliant. 
+In that case, /dev/null is the appropriate place to send your message.
 
