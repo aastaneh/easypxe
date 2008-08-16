@@ -44,9 +44,9 @@ instead.
    IP of the interface that will be providing PXE and the IP you want 
    to assign to the client.
 
-3. ./easypxe (as root)
+4. ./easypxe (as root)
 
-4. Enjoy (Considering you didn't have to install tftpd, dhcpd, and xinetd, 
+5. Enjoy (Considering you didn't have to install tftpd, dhcpd, and xinetd, 
 and google around for a howto)
 
 **A suggestion- If you are doing this from computer to computer via a 
